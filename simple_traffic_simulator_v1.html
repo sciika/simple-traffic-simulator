@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>交通渋滞シミュレーション</title>
+    <style>
+        body { text-align: center; font-family: sans-serif; background: #f5f5f5; }
+        canvas { background: #e0e0e0; border: 2px solid #333; margin-top: 20px; box-shadow: 2px 2px 10px rgba(0,0,0,0.1); }
+        #controls { display: flex; gap: 8px; justify-content: center; margin-top: 10px; }
+        .sig-btn { padding: 6px 20px; border-radius: 6px; border: 1px solid #aaa; font-size: 13px; cursor: pointer; background: #fff; }
+        .sig-btn.active-auto   { background: #ddd; }
+        .sig-btn.active-green  { background: #00c853; color: #fff; border-color: #00c853; }
+        .sig-btn.active-yellow { background: #ffd600; color: #333; border-color: #ffd600; }
+        .sig-btn.active-red    { background: #ff1744; color: #fff; border-color: #ff1744; }
+    </style>
+</head>
+<body>
+    <h2>交通渋滞シミュレーション (IDM)</h2>
+    <canvas id="simCanvas" width="800" height="200"></canvas>
+    <div id="controls"> 
+        <button class="sig-btn active-auto" id="btn-auto">自動</button>
+        <button class="sig-btn" id="btn-green">青</button>
+        <button class="sig-btn" id="btn-yellow">黄</button>
+        <button class="sig-btn" id="btn-red">赤</button>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('simCanvas');
+        const ctx = canvas.getContext('2d');
+
+        const LIGHT_X = 600;
+        const CAR_LENGTH = 30;
+        const V_MAX = 3.0;
+        const A_MAX = 0.05;
+        const B_COMF = 0.05;
+        const T_SAFE = 15.0;
+        const S_0 = 10;
+        const SPEED_FACTOR = 20;
+
+        let cars = [];
+        let frameCount = 0;
+        let manualSignal = null; // null=自動, 'Green'/'Yellow'/'Red'=手動
+
+        const buttons = {
+            auto:   document.getElementById('btn-auto'),
+            green:  document.getElementById('btn-green'),
+            yellow: document.getElementById('btn-yellow'),
+            red:    document.getElementById('btn-red'),
+        };
+
+        function setSignal(state) {
+            manualSignal = state;
+            Object.values(buttons).forEach(b => b.className = 'sig-btn');
+            if (state === null)     buttons.auto.classList.add('active-auto');
+            if (state === 'Green')  buttons.green.classList.add('active-green');
+            if (state === 'Yellow') buttons.yellow.classList.add('active-yellow');
+            if (state === 'Red')    buttons.red.classList.add('active-red');
+        }
+
+        buttons.auto.addEventListener('click',   () => setSignal(null));
+        buttons.green.addEventListener('click',  () => setSignal('Green'));
+        buttons.yellow.addEventListener('click', () => setSignal('Yellow'));
+        buttons.red.addEventListener('click',    () => setSignal('Red'));
+
+        class Car {
+            constructor() {
+                this.x = -50;
+                this.v = V_MAX;
+                this.ignoreSignal = false;
+            }
+            update(targetX, targetV, L_eff) {
+                let s = Math.max(0.1, targetX - this.x - L_eff);
+                let dv = this.v - targetV;
+                let s_star = S_0 + this.v * T_SAFE + (this.v * dv) / (2 * Math.sqrt(A_MAX * B_COMF));
+                let a = A_MAX * (1 - Math.pow(this.v / V_MAX, 4) - Math.pow(s_star / s, 2));
+                this.v = Math.max(0, this.v + a);
+                this.x += this.v;
+            }
+            draw() {
+                ctx.fillStyle = this.ignoreSignal ? '#e67e22' : '#3498db';
+                ctx.fillRect(this.x, 95, CAR_LENGTH, 20);
+
+                ctx.fillStyle = '#111';
+                ctx.font = '12px Arial';
+                let speedKmh = Math.round(this.v * SPEED_FACTOR);
+                ctx.fillText(`${speedKmh} km/h`, this.x - 5, 85);
+            }
+        }
+
+        function getLightState() {
+            if (manualSignal !== null) return manualSignal;
+            let cycle = frameCount % 900;
+            if (cycle < 550) return 'Green';
+            if (cycle < 600) return 'Yellow';
+            return 'Red';
+        }
+
+        function loop() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            frameCount++;
+            let lightState = getLightState();
+            
+            // 道路
+            ctx.fillStyle = '#555';
+            ctx.fillRect(0, 85, canvas.width, 40);
+
+            // 停止線
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(LIGHT_X - 4, 85, 4, 40);
+
+            // 信号機
+            ctx.fillStyle = '#333';
+            ctx.fillRect(LIGHT_X, 20, 24, 60);
+            ctx.fillStyle = lightState === 'Green' ? '#00e676' : '#333';
+            ctx.beginPath(); ctx.arc(LIGHT_X + 12, 30, 6, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = lightState === 'Yellow' ? '#ffea00' : '#333';
+            ctx.beginPath(); ctx.arc(LIGHT_X + 12, 50, 6, 0, Math.PI*2); ctx.fill();
+            ctx.fillStyle = lightState === 'Red' ? '#ff1744' : '#333';
+            ctx.beginPath(); ctx.arc(LIGHT_X + 12, 70, 6, 0, Math.PI*2); ctx.fill();
+
+            // 車両生成
+            if (Math.random() < 0.02 && (cars.length === 0 || cars[cars.length - 1].x > 30)) {
+                cars.push(new Car());
+            }
+ 
+            for (let i = 0; i < cars.length; i++) {
+                let car = cars[i];
+
+                // 前方車両がいない場合
+                let targetX = Infinity;
+                let targetV = V_MAX;
+                let L_eff = CAR_LENGTH;
+
+                //　前方車両がいれば追従
+                if (i > 0) {
+                    targetX = cars[i - 1].x;
+                    targetV = cars[i - 1].v;
+                }
+
+                //停止線回りの処理
+                const mustStop = lightState === 'Red' || lightState === 'Yellow';
+                const stopX = LIGHT_X - S_0 - CAR_LENGTH;
+
+                if (mustStop && car.x + CAR_LENGTH <= LIGHT_X) {  // 車体前端が停止線を越えていない車だけ信号判定する
+                    const distToStop = stopX - car.x;
+                    const d_brake = (car.v * car.v) / (2 * B_COMF);
+
+                    if (distToStop > 0 && distToStop < targetX - car.x) {
+                        if (distToStop >= d_brake * 0.8 || car.v < 0.5) {
+                            car.ignoreSignal = false;
+                            targetX = LIGHT_X - S_0 - CAR_LENGTH;
+                            targetV = 0;
+                            L_eff = 0;
+                        } else {
+                            car.ignoreSignal = true;  // 止まれない場合は通過
+                        }
+                    }
+                } else {
+                    car.ignoreSignal = false;
+                }
+
+                car.update(targetX, targetV, L_eff);
+                car.draw();
+            }
+
+            // 画面外に出た車両を削除
+            cars = cars.filter(car => car.x < canvas.width + 50);
+            requestAnimationFrame(loop);
+        }
+
+        loop();
+    </script>
+</body>
+</html>
